@@ -1,12 +1,8 @@
 import { Handler } from '@netlify/functions';
 import { aiService } from '../../src/services/aiService';
 import { airtableService } from '../../src/services/airtableService';
-
-interface IncomingMessage {
-  message: string;
-  sender: string;
-  timestamp: string;
-}
+import { whatsappMessageSchema } from '../../src/types/webhook';
+import type { WhatsappMessage, WhatsappResponsePayload } from '../../src/types/webhook';
 
 const MAKE_RESPONSE_WEBHOOK = 'https://hook.eu1.make.com/v44op53s8w0hlaoqlfrnfu35bd09i7g8';
 
@@ -36,8 +32,13 @@ export const handler: Handler = async (event) => {
   }
 
   try {
-    console.log('Received webhook:', event.body);
-    const data = JSON.parse(event.body || '{}') as IncomingMessage;
+    console.log('Received webhook payload:', event.body);
+    
+    // Parse and validate incoming message
+    const data = JSON.parse(event.body || '{}');
+    const validatedMessage = whatsappMessageSchema.parse(data);
+    
+    console.log('Validated message:', validatedMessage);
 
     // Get property for this sender
     const properties = await airtableService.getProperties();
@@ -60,25 +61,28 @@ export const handler: Handler = async (event) => {
     // Generate AI response
     const aiResponse = await aiService.generateResponse({
       id: Date.now().toString(),
-      text: data.message,
+      text: validatedMessage.message,
       isUser: true,
-      timestamp: new Date(data.timestamp),
-      sender: data.sender
+      timestamp: new Date(validatedMessage.timestamp),
+      sender: validatedMessage.sender
     }, property);
 
-    // Send response back through Make.com webhook
+    // Prepare response payload for Make.com webhook
+    const responsePayload: WhatsappResponsePayload = {
+      Body: aiResponse
+    };
+
+    // Send response through Make.com webhook
     const response = await fetch(MAKE_RESPONSE_WEBHOOK, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        Body: aiResponse
-      })
+      body: JSON.stringify(responsePayload)
     });
 
     if (!response.ok) {
-      throw new Error('Failed to send response through Make.com webhook');
+      throw new Error(`Failed to send response through Make.com webhook: ${response.statusText}`);
     }
 
     return {
@@ -99,7 +103,7 @@ export const handler: Handler = async (event) => {
       statusCode: 500,
       body: JSON.stringify({
         success: false,
-        error: 'Internal server error'
+        error: error instanceof Error ? error.message : 'Internal server error'
       }),
       headers: {
         'Access-Control-Allow-Origin': '*',
